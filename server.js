@@ -3,15 +3,15 @@ const { Pool } = require('pg');
 const bcrypt = require('bcryptjs');
 const cors = require('cors');
 const http = require('http');
-const { Server } = require('socket.io');
 const { OpenAI } = require("openai");
+const { Server } = require('socket.io');
+
 require('dotenv').config();
 
 const app = express();
 const server = http.createServer(app);
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-const AI_BOT_ID = 999;
+
 
 // 1. SOCKET.IO SETUP
 const io = new Server(server, { 
@@ -28,6 +28,8 @@ const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false },
 });
+
+const openai = process.env.OPENAI_API_KEY ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY }) : null;
 
 // --- AUTHENTICATION ROUTES ---
 

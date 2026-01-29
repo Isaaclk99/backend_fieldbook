@@ -9,13 +9,14 @@ require('dotenv').config();
 const app = express();
 const server = http.createServer(app);
 
+
 // 1. SOCKET.IO SETUP
 const io = new Server(server, { 
     cors: { 
         origin: "*",
         methods: ["GET", "POST"]
     },
-    transports: ['websocket'] // Required for stable React Native connection
+    transports: ['websocket'] 
 });
 
 global.io = io;
@@ -25,19 +26,15 @@ app.use(cors());
 // 2. DATABASE CONNECTION
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: {
-    rejectUnauthorized: false, // Required for Neon/Heroku
-  },
-  max: 20, // Allow more connections
+  ssl: { rejectUnauthorized: false },
+  max: 20,
   idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 10000, // Increase to 10s
+  connectionTimeoutMillis: 10000,
 });
 
-// Test Database Connection
+// Test Connection
 pool.connect((err, client, release) => {
-  if (err) {
-    return console.error('🔴 Database connection failed:', err.stack);
-  }
+  if (err) return console.error('🔴 Database connection failed:', err.stack);
   console.log('🟢 Database connected successfully to Neon');
   release();
 });
@@ -75,9 +72,9 @@ app.post('/login', async (req, res) => {
   } catch (err) { res.status(500).json({ error: "Login failed" }); }
 });
 
-// --- USER & MESSAGING ROUTES ---
 
-// Fetch ALL users
+// --- MESSAGING ROUTES (MATCHED TO YOUR NEON TABLE) ---
+
 app.get('/users', async (req, res) => {
   try {
     const result = await pool.query("SELECT id, username, full_name, role FROM users ORDER BY username ASC");
@@ -87,99 +84,68 @@ app.get('/users', async (req, res) => {
   }
 });
 
-// Fetch user list with last message preview and unread counts
+// Fetch active chats for the sidebar/list
 app.get('/users/chats/:userId', async (req, res) => {
   const { userId } = req.params;
-  if (!userId || userId === 'null') return res.status(400).json({ error: "Invalid User ID" });
   try {
     const result = await pool.query(`
       SELECT u.id, u.username,
-        (SELECT message_text FROM private_messages 
-         WHERE ((sender_id_user_id = u.id AND receiver_id_user_id = $1) 
-            OR (sender_id_user_id = $1 AND receiver_id_user_id = u.id))
-            AND is_deleted = false
+        (SELECT text FROM messages 
+         WHERE ((sender_id = u.id AND receiver_id = $1) OR (sender_id = $1 AND receiver_id = u.id))
+         AND is_deleted = false
          ORDER BY created_at DESC LIMIT 1) as last_message,
-        (SELECT created_at FROM private_messages 
-         WHERE ((sender_id_user_id = u.id AND receiver_id_user_id = $1) 
-            OR (sender_id_user_id = $1 AND receiver_id_user_id = u.id))
-            AND is_deleted = false
-         ORDER BY created_at DESC LIMIT 1) as last_message_time,
-        (SELECT COUNT(*)::int FROM private_messages 
-         WHERE sender_id_user_id = u.id AND receiver_id_user_id = $1 AND is_read = false AND is_deleted = false) as unread_count
+        (SELECT created_at FROM messages 
+         WHERE ((sender_id = u.id AND receiver_id = $1) OR (sender_id = $1 AND receiver_id = u.id))
+         AND is_deleted = false
+         ORDER BY created_at DESC LIMIT 1) as last_message_time
       FROM users u WHERE u.id != $1 
       ORDER BY last_message_time DESC NULLS LAST
     `, [userId]);
     res.json(result.rows); 
-  } catch (err) { res.status(500).json({ error: "Database error" }); }
+  } catch (err) { res.status(500).json({ error: "Chat list error" }); }
 });
 
-// Fetch conversation history between two users
+// Fetch specific conversation history
 app.get('/messages/:u1/:u2', async (req, res) => {
   const { u1, u2 } = req.params;
   try {
     const result = await pool.query(
-      `SELECT id, sender_id_user_id AS sender_id, receiver_id_user_id AS receiver_id, 
-       message_text, created_at, is_read FROM private_messages 
-       WHERE ((sender_id_user_id=$1 AND receiver_id_user_id=$2) 
-          OR (sender_id_user_id=$2 AND receiver_id_user_id=$1))
-          AND is_deleted = false 
+      `SELECT id, sender_id, receiver_id, text AS message_text, created_at 
+       FROM messages 
+       WHERE ((sender_id=$1 AND receiver_id=$2) OR (sender_id=$2 AND receiver_id=$1))
+       AND is_deleted = false 
        ORDER BY created_at ASC`, [u1, u2]
     );
     res.json(result.rows);
   } catch (err) { res.status(500).json({ error: "History error" }); }
 });
 
-// CORRECTED POST ROUTE: Sends and Broadcasts
+// POST: Send message (Matches your table columns)
 app.post('/messages', async (req, res) => {
-  const { sender_id_user_id, receiver_id_user_id, message_text } = req.body;
+  const { sender_id, receiver_id, message_text } = req.body;
 
-  // 1. Safety check for missing data
-  if (!sender_id_user_id || !receiver_id_user_id || !message_text) {
-    return res.status(400).json({ error: "Missing required fields" });
+  if (!sender_id || !receiver_id || !message_text) {
+    return res.status(400).json({ error: "Missing fields" });
   }
 
   try {
     const result = await pool.query(
-      `INSERT INTO private_messages (sender_id_user_id, receiver_id_user_id, message_text, is_read, created_at) 
-       VALUES ($1, $2, $3, false, NOW()) 
-       RETURNING id, sender_id_user_id AS sender_id, receiver_id_user_id AS receiver_id, message_text, created_at, is_read`,
-      [sender_id_user_id, receiver_id_user_id, message_text]
+      `INSERT INTO messages (sender_id, receiver_id, text, message_type, is_deleted, created_at) 
+       VALUES ($1, $2, $3, 'text', false, NOW()) 
+       RETURNING id, sender_id, receiver_id, text AS message_text, created_at`,
+      [sender_id, receiver_id, message_text]
     );
 
     const msg = result.rows[0];
 
-    // 2. Emit via Socket.io to the specific rooms
-    // We convert to string to ensure the socket rooms match the join ID
-    io.to(receiver_id_user_id.toString()).emit('new_message', msg);
-    io.to(sender_id_user_id.toString()).emit('new_message', msg);
+    // Broadcast
+    io.to(receiver_id.toString()).emit('new_message', msg);
+    io.to(sender_id.toString()).emit('new_message', msg);
 
     res.status(201).json(msg);
   } catch (err) { 
-    console.error("Internal Send Error:", err);
-    res.status(500).json({ error: "Failed to send message" }); 
-  }
-});
-
-// Mark messages as read
-app.post('/messages/read', async (req, res) => {
-  let { userId, contactId } = req.body;
-  try {
-    await pool.query(
-      "UPDATE private_messages SET is_read = true WHERE sender_id_user_id = $1 AND receiver_id_user_id = $2 AND is_read = false",
-      [contactId, userId]
-    );
-    res.json({ success: true });
-  } catch (err) { res.status(500).json({ error: "Update failed" }); }
-});
-
-// Soft delete a message
-app.patch('/messages/:id/delete', async (req, res) => {
-  const { id } = req.params;
-  try {
-    await pool.query('UPDATE private_messages SET is_deleted = true WHERE id = $1', [id]);
-    res.json({ success: true });
-  } catch (err) {
-    res.status(500).json({ error: "Failed to delete message" });
+    console.error("DB Error:", err);
+    res.status(500).json({ error: "Send failed" }); 
   }
 });
 
@@ -302,26 +268,14 @@ app.put('/users/profile/:id', async (req, res) => {
   }
 });
 
-// --- SOCKET.IO LOGIC ---
+// --- SOCKET LOGIC ---
 io.on('connection', (socket) => {
-  console.log(`📡 New connection: ${socket.id}`);
-  
   socket.on('join', (userId) => {
-    if (userId) {
-        socket.join(userId.toString());
-        console.log(`👤 User ${userId} joined room`);
-    }
-  });
-
-  socket.on('disconnect', () => {
-    console.log(`🔌 Socket ${socket.id} disconnected`);
+    if (userId) socket.join(userId.toString());
   });
 });
 
 const PORT = process.env.PORT || 3000;
-
-app.listen(PORT, '0.0.0.0', () => {
-console.log(`Server is running on port ${PORT}`);
-
+server.listen(PORT, '0.0.0.0', () => {
+  console.log(`Server is running on port ${PORT}`);
 });
-

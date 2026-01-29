@@ -29,7 +29,9 @@ const pool = new Pool({
   ssl: { rejectUnauthorized: false },
 });
 
+// Initialize OpenAI safety check
 const openai = process.env.OPENAI_API_KEY ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY }) : null;
+const AI_BOT_ID = 999;
 
 // --- AUTHENTICATION ROUTES ---
 
@@ -102,11 +104,13 @@ app.post('/messages', async (req, res) => {
   } catch (err) { res.status(500).json({ error: "Send failed" }); }
 });
 
+// --- RESERVED AI CHAT ROUTE ---
 app.post('/messages/ai', async (req, res) => {
   const { sender_id, message_text } = req.body;
+  if (!openai) return res.status(500).json({ error: "AI not configured on server." });
 
   try {
-    // 1. Check permissions
+    // 1. Check permissions in database
     const userCheck = await pool.query("SELECT has_ai_access FROM users WHERE id = $1", [sender_id]);
     if (!userCheck.rows[0]?.has_ai_access) {
       return res.status(403).json({ error: "Feature Reserved." });
@@ -132,7 +136,6 @@ app.post('/messages/ai', async (req, res) => {
       [AI_BOT_ID, sender_id, aiText]
     );
 
-    // 5. Emit to user's socket
     if (global.io) global.io.to(sender_id.toString()).emit('new_message', result.rows[0]);
 
     res.status(201).json(result.rows[0]);

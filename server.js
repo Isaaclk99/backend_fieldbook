@@ -77,7 +77,7 @@ app.post('/login', async (req, res) => {
 
 // --- USER & MESSAGING ROUTES ---
 
-// NEW: Fetch ALL users (used to start new chats)
+// Fetch ALL users
 app.get('/users', async (req, res) => {
   try {
     const result = await pool.query("SELECT id, username, full_name, role FROM users ORDER BY username ASC");
@@ -87,6 +87,7 @@ app.get('/users', async (req, res) => {
   }
 });
 
+// Fetch user list with last message preview and unread counts
 app.get('/users/chats/:userId', async (req, res) => {
   const { userId } = req.params;
   if (!userId || userId === 'null') return res.status(400).json({ error: "Invalid User ID" });
@@ -112,6 +113,7 @@ app.get('/users/chats/:userId', async (req, res) => {
   } catch (err) { res.status(500).json({ error: "Database error" }); }
 });
 
+// Fetch conversation history between two users
 app.get('/messages/:u1/:u2', async (req, res) => {
   const { u1, u2 } = req.params;
   try {
@@ -127,8 +129,15 @@ app.get('/messages/:u1/:u2', async (req, res) => {
   } catch (err) { res.status(500).json({ error: "History error" }); }
 });
 
+// CORRECTED POST ROUTE: Sends and Broadcasts
 app.post('/messages', async (req, res) => {
   const { sender_id_user_id, receiver_id_user_id, message_text } = req.body;
+
+  // 1. Safety check for missing data
+  if (!sender_id_user_id || !receiver_id_user_id || !message_text) {
+    return res.status(400).json({ error: "Missing required fields" });
+  }
+
   try {
     const result = await pool.query(
       `INSERT INTO private_messages (sender_id_user_id, receiver_id_user_id, message_text, is_read, created_at) 
@@ -136,13 +145,22 @@ app.post('/messages', async (req, res) => {
        RETURNING id, sender_id_user_id AS sender_id, receiver_id_user_id AS receiver_id, message_text, created_at, is_read`,
       [sender_id_user_id, receiver_id_user_id, message_text]
     );
+
     const msg = result.rows[0];
+
+    // 2. Emit via Socket.io to the specific rooms
+    // We convert to string to ensure the socket rooms match the join ID
     io.to(receiver_id_user_id.toString()).emit('new_message', msg);
     io.to(sender_id_user_id.toString()).emit('new_message', msg);
+
     res.status(201).json(msg);
-  } catch (err) { res.status(500).json({ error: "Failed to send" }); }
+  } catch (err) { 
+    console.error("Internal Send Error:", err);
+    res.status(500).json({ error: "Failed to send message" }); 
+  }
 });
 
+// Mark messages as read
 app.post('/messages/read', async (req, res) => {
   let { userId, contactId } = req.body;
   try {
@@ -154,14 +172,15 @@ app.post('/messages/read', async (req, res) => {
   } catch (err) { res.status(500).json({ error: "Update failed" }); }
 });
 
+// Soft delete a message
 app.patch('/messages/:id/delete', async (req, res) => {
-    const { id } = req.params;
-    try {
-        await pool.query('UPDATE private_messages SET is_deleted = true WHERE id = $1', [id]);
-        res.json({ success: true });
-    } catch (err) {
-        res.status(500).json({ error: "Failed to delete message" });
-    }
+  const { id } = req.params;
+  try {
+    await pool.query('UPDATE private_messages SET is_deleted = true WHERE id = $1', [id]);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to delete message" });
+  }
 });
 
 // --- UNIVERSAL POSTING ROUTES ---
@@ -303,4 +322,5 @@ const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, '0.0.0.0', () => {
 console.log(`Server is running on port ${PORT}`);
+
 });

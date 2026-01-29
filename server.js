@@ -4,10 +4,14 @@ const bcrypt = require('bcryptjs');
 const cors = require('cors');
 const http = require('http');
 const { Server } = require('socket.io');
+const { OpenAI } = require("openai");
 require('dotenv').config();
 
 const app = express();
 const server = http.createServer(app);
+
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const AI_BOT_ID = 999;
 
 // 1. SOCKET.IO SETUP
 const io = new Server(server, { 
@@ -94,6 +98,45 @@ app.post('/messages', async (req, res) => {
     io.to(sender_id.toString()).emit('new_message', msg);
     res.status(201).json(msg);
   } catch (err) { res.status(500).json({ error: "Send failed" }); }
+});
+
+app.post('/messages/ai', async (req, res) => {
+  const { sender_id, message_text } = req.body;
+
+  try {
+    // 1. Check permissions
+    const userCheck = await pool.query("SELECT has_ai_access FROM users WHERE id = $1", [sender_id]);
+    if (!userCheck.rows[0]?.has_ai_access) {
+      return res.status(403).json({ error: "Feature Reserved." });
+    }
+
+    // 2. Save User Prompt
+    await pool.query(
+      "INSERT INTO messages (sender_id, receiver_id, text) VALUES ($1, $2, $3)",
+      [sender_id, AI_BOT_ID, message_text]
+    );
+
+    // 3. Get OpenAI Response
+    const completion = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [{ role: "system", content: "You are the FieldMessenger AI assistant." }, { role: "user", content: message_text }],
+    });
+    const aiText = completion.choices[0].message.content;
+
+    // 4. Save & Return AI Response
+    const result = await pool.query(
+      `INSERT INTO messages (sender_id, receiver_id, text, is_ai_response, created_at) 
+       VALUES ($1, $2, $3, true, NOW()) RETURNING id, sender_id, text AS message_text, created_at`,
+      [AI_BOT_ID, sender_id, aiText]
+    );
+
+    // 5. Emit to user's socket
+    if (global.io) global.io.to(sender_id.toString()).emit('new_message', result.rows[0]);
+
+    res.status(201).json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: "AI processing failed." });
+  }
 });
 
 // --- UNIVERSAL POSTING ROUTES ---

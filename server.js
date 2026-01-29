@@ -9,14 +9,10 @@ require('dotenv').config();
 const app = express();
 const server = http.createServer(app);
 
-
 // 1. SOCKET.IO SETUP
 const io = new Server(server, { 
-    cors: { 
-        origin: "*",
-        methods: ["GET", "POST"]
-    },
-    transports: ['websocket'] 
+    cors: { origin: "*", methods: ["GET", "POST"] },
+    transports: ['websocket']
 });
 
 global.io = io;
@@ -27,16 +23,6 @@ app.use(cors());
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false },
-  max: 20,
-  idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 10000,
-});
-
-// Test Connection
-pool.connect((err, client, release) => {
-  if (err) return console.error('🔴 Database connection failed:', err.stack);
-  console.log('🟢 Database connected successfully to Neon');
-  release();
 });
 
 // --- AUTHENTICATION ROUTES ---
@@ -73,39 +59,14 @@ app.post('/login', async (req, res) => {
 });
 
 
-// --- MESSAGING ROUTES (MATCHED TO YOUR NEON TABLE) ---
-
+// --- MESSAGING ROUTES (MATCHED TO NEON) ---
 app.get('/users', async (req, res) => {
   try {
     const result = await pool.query("SELECT id, username, full_name, role FROM users ORDER BY username ASC");
     res.json(result.rows);
-  } catch (err) {
-    res.status(500).json({ error: "Failed to fetch users" });
-  }
+  } catch (err) { res.status(500).json({ error: "Fetch error" }); }
 });
 
-// Fetch active chats for the sidebar/list
-app.get('/users/chats/:userId', async (req, res) => {
-  const { userId } = req.params;
-  try {
-    const result = await pool.query(`
-      SELECT u.id, u.username,
-        (SELECT text FROM messages 
-         WHERE ((sender_id = u.id AND receiver_id = $1) OR (sender_id = $1 AND receiver_id = u.id))
-         AND is_deleted = false
-         ORDER BY created_at DESC LIMIT 1) as last_message,
-        (SELECT created_at FROM messages 
-         WHERE ((sender_id = u.id AND receiver_id = $1) OR (sender_id = $1 AND receiver_id = u.id))
-         AND is_deleted = false
-         ORDER BY created_at DESC LIMIT 1) as last_message_time
-      FROM users u WHERE u.id != $1 
-      ORDER BY last_message_time DESC NULLS LAST
-    `, [userId]);
-    res.json(result.rows); 
-  } catch (err) { res.status(500).json({ error: "Chat list error" }); }
-});
-
-// Fetch specific conversation history
 app.get('/messages/:u1/:u2', async (req, res) => {
   const { u1, u2 } = req.params;
   try {
@@ -113,40 +74,26 @@ app.get('/messages/:u1/:u2', async (req, res) => {
       `SELECT id, sender_id, receiver_id, text AS message_text, created_at 
        FROM messages 
        WHERE ((sender_id=$1 AND receiver_id=$2) OR (sender_id=$2 AND receiver_id=$1))
-       AND is_deleted = false 
-       ORDER BY created_at ASC`, [u1, u2]
+       AND is_deleted = false ORDER BY created_at ASC`, [u1, u2]
     );
     res.json(result.rows);
   } catch (err) { res.status(500).json({ error: "History error" }); }
 });
 
-// POST: Send message (Matches your table columns)
 app.post('/messages', async (req, res) => {
   const { sender_id, receiver_id, message_text } = req.body;
-
-  if (!sender_id || !receiver_id || !message_text) {
-    return res.status(400).json({ error: "Missing fields" });
-  }
-
   try {
     const result = await pool.query(
-      `INSERT INTO messages (sender_id, receiver_id, text, message_type, is_deleted, created_at) 
-       VALUES ($1, $2, $3, 'text', false, NOW()) 
+      `INSERT INTO messages (sender_id, receiver_id, text, is_deleted, created_at) 
+       VALUES ($1, $2, $3, false, NOW()) 
        RETURNING id, sender_id, receiver_id, text AS message_text, created_at`,
       [sender_id, receiver_id, message_text]
     );
-
     const msg = result.rows[0];
-
-    // Broadcast
     io.to(receiver_id.toString()).emit('new_message', msg);
     io.to(sender_id.toString()).emit('new_message', msg);
-
     res.status(201).json(msg);
-  } catch (err) { 
-    console.error("DB Error:", err);
-    res.status(500).json({ error: "Send failed" }); 
-  }
+  } catch (err) { res.status(500).json({ error: "Send failed" }); }
 });
 
 // --- UNIVERSAL POSTING ROUTES ---
@@ -270,9 +217,7 @@ app.put('/users/profile/:id', async (req, res) => {
 
 // --- SOCKET LOGIC ---
 io.on('connection', (socket) => {
-  socket.on('join', (userId) => {
-    if (userId) socket.join(userId.toString());
-  });
+  socket.on('join', (userId) => { if (userId) socket.join(userId.toString()); });
 });
 
 const PORT = process.env.PORT || 3000;

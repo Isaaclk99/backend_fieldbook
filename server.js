@@ -28,7 +28,7 @@ const pool = new Pool({
 });
 
 // 3. FIXED: AI CONFIGURATION
-const AI_BOT_ID = 999; // Added missing variable
+// const AI_BOT_ID = 999; // Added missing variable
 const openai = process.env.OPENAI_API_KEY ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY }) : null;
 
 // --- AUTHENTICATION ROUTES ---
@@ -102,33 +102,36 @@ app.post('/messages', async (req, res) => {
   } catch (err) { res.status(500).json({ error: "Send failed" }); }
 });
 
-// --- RESERVED AI CHAT ROUTE ---
-
+// The AI Route (No Database Version)
 app.post('/messages/ai', async (req, res) => {
-  const { sender_id, message_text } = req.body;
-  if (!openai) return res.status(500).json({ error: "OpenAI not configured." });
+  const { message_text } = req.body;
+
+  if (!openai) {
+    return res.status(500).json({ error: "OpenAI API Key is not configured in Vercel." });
+  }
 
   try {
-    const userCheck = await pool.query("SELECT has_ai_access FROM users WHERE id = $1", [sender_id]);
-    if (!userCheck.rows[0]?.has_ai_access) return res.status(403).json({ error: "Feature Reserved." });
-
-    await pool.query("INSERT INTO messages (sender_id, receiver_id, text) VALUES ($1, $2, $3)", [sender_id, AI_BOT_ID, message_text]);
-
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
-      messages: [{ role: "system", content: "You are the FieldMessenger AI assistant." }, { role: "user", content: message_text }],
+      messages: [
+        { role: "system", content: "You are the FieldMessenger AI assistant. Help with project management and farming advice." },
+        { role: "user", content: message_text }
+      ],
     });
-    const aiText = completion.choices[0].message.content;
 
-    const result = await pool.query(
-      `INSERT INTO messages (sender_id, receiver_id, text, is_ai_response, created_at) 
-       VALUES ($1, $2, $3, true, NOW()) RETURNING id, sender_id, text AS message_text, created_at`,
-      [AI_BOT_ID, sender_id, aiText]
-    );
+    const aiResponse = completion.choices[0].message.content;
 
-    if (global.io) global.io.to(sender_id.toString()).emit('new_message', result.rows[0]);
-    res.status(201).json(result.rows[0]);
-  } catch (err) { res.status(500).json({ error: "AI failed." }); }
+    // Return the response directly
+    res.json({
+      id: Date.now().toString(),
+      sender_id: '999',
+      message_text: aiResponse,
+      created_at: new Date().toISOString()
+    });
+  } catch (err) {
+    console.error("OpenAI Error:", err);
+    res.status(500).json({ error: "AI failed to respond. Check backend logs." });
+  }
 });
 
 // --- UNIVERSAL POSTING ROUTES ---

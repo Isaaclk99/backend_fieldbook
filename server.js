@@ -29,8 +29,10 @@ const pool = new Pool({
 
 // 3. FIXED: AI CONFIGURATION
 // const AI_BOT_ID = 999; // Added missing variable
-const openai = process.env.OPENAI_API_KEY ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY }) : null;
-
+// Initialize OpenAI with the key from your .env
+const openai = new OpenAI({ 
+  apiKey: process.env.OPENAI_API_KEY 
+});
 // --- AUTHENTICATION ROUTES ---
 
 app.post('/register', async (req, res) => {
@@ -102,26 +104,22 @@ app.post('/messages', async (req, res) => {
   } catch (err) { res.status(500).json({ error: "Send failed" }); }
 });
 
-// The AI Route (No Database Version)
+//Ai Assistant Message Route
 app.post('/messages/ai', async (req, res) => {
   const { message_text } = req.body;
-
-  if (!openai) {
-    return res.status(500).json({ error: "OpenAI API Key is not configured in Vercel." });
-  }
 
   try {
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       messages: [
-        { role: "system", content: "You are the FieldMessenger AI assistant. Help with project management and farming advice." },
+        { role: "system", content: "You are the Field Assistant bot. Be concise and helpful." },
         { role: "user", content: message_text }
       ],
     });
 
     const aiResponse = completion.choices[0].message.content;
 
-    // Return the response directly
+    // Send JSON directly back to the app
     res.json({
       id: Date.now().toString(),
       sender_id: '999',
@@ -130,7 +128,7 @@ app.post('/messages/ai', async (req, res) => {
     });
   } catch (err) {
     console.error("OpenAI Error:", err);
-    res.status(500).json({ error: "AI failed to respond. Check backend logs." });
+    res.status(500).json({ error: "AI failed to respond. Check Vercel logs." });
   }
 });
 

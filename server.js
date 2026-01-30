@@ -3,7 +3,7 @@ const { Pool } = require('pg');
 const bcrypt = require('bcryptjs');
 const cors = require('cors');
 const http = require('http');
-const { OpenAI } = require("openai");
+const Groq = require("groq-sdk");
 const { Server } = require('socket.io');
 
 require('dotenv').config();
@@ -27,12 +27,10 @@ const pool = new Pool({
   ssl: { rejectUnauthorized: false },
 });
 
-// 3. FIXED: AI CONFIGURATION
-// const AI_BOT_ID = 999; // Added missing variable
-// Initialize OpenAI with the key from your .env
-const openai = new OpenAI({ 
-  apiKey: process.env.OPENAI_API_KEY 
-});
+// 3. GROQ CONFIGURATION
+const AI_BOT_ID = '999'; 
+// Ensure GROQ_API_KEY is set in Vercel Environment Variables
+const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 // --- AUTHENTICATION ROUTES ---
 
 app.post('/register', async (req, res) => {
@@ -104,31 +102,32 @@ app.post('/messages', async (req, res) => {
   } catch (err) { res.status(500).json({ error: "Send failed" }); }
 });
 
-//Ai Assistant Message Route
+// 🟢 AI ROUTE - NO DATABASE USED
 app.post('/messages/ai', async (req, res) => {
   const { message_text } = req.body;
 
   try {
-    const completion = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
+    const chatCompletion = await groq.chat.completions.create({
       messages: [
-        { role: "system", content: "You are the Field Assistant bot. Be concise and helpful." },
+        { role: "system", content: "You are the Field Assistant. Help with farming and projects." },
         { role: "user", content: message_text }
       ],
+      model: "llama-3.3-70b-versatile",
     });
 
-    const aiResponse = completion.choices[0].message.content;
+    const aiResponse = chatCompletion.choices[0].message.content;
 
-    // Send JSON directly back to the app
+    // We just return the JSON directly without pool.query()
     res.json({
       id: Date.now().toString(),
-      sender_id: '999',
+      sender_id: AI_BOT_ID,
       message_text: aiResponse,
       created_at: new Date().toISOString()
     });
+
   } catch (err) {
-    console.error("OpenAI Error:", err);
-    res.status(500).json({ error: "AI failed to respond. Check Vercel logs." });
+    console.error("Groq Error:", err.message);
+    res.status(500).json({ error: "AI is offline." });
   }
 });
 

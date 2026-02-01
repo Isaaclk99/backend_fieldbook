@@ -131,9 +131,22 @@ app.post('/messages/ai', async (req, res) => {
   }
 });
 
-// --- UNIVERSAL POSTING ROUTES ---
+// --- FEED & POSTING ROUTES ---
 
-// 1. Regular Feed Posts
+app.get('/posts', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT p.*, u.username AS author_name,
+        (SELECT COUNT(*) FROM likes WHERE post_id = p.id) AS like_count,
+        (SELECT COUNT(*) FROM comments WHERE post_id = p.id) AS comment_count,
+        (SELECT COALESCE(SUM(amount), 0) FROM investments WHERE post_id = p.id) AS total_invested
+      FROM posts p JOIN users u ON p.author_id = u.id
+      ORDER BY p.created_at DESC
+    `);
+    res.json(result.rows);
+  } catch (err) { res.status(500).json({ error: "Fetch error" }); }
+});
+
 app.post('/posts', async (req, res) => {
   const { user_id, description, image_url, media_type } = req.body;
   try {
@@ -142,78 +155,54 @@ app.post('/posts', async (req, res) => {
       [user_id, description, image_url, media_type || 'image']
     );
     res.status(201).json(result.rows[0]);
-  } catch (err) {
-    res.status(500).json({ error: "Post failed: " + err.message });
-  }
-});
-// 🟢 LIKE ROUTE - Logic for your 'likes' table
-app.post('/posts/:id/like', async (req, res) => {
-  const { id } = req.params; // post_id
-  const { userId } = req.body; // user_id from frontend
-
-  try {
-    // 1. Add record to the 'likes' table
-    await pool.query(
-      'INSERT INTO likes (post_id, user_id) VALUES ($1, $2)',
-      [id, userId]
-    );
-
-    // 2. Increment the like_count in the 'posts' table so the UI updates
-    await pool.query(
-      'UPDATE posts SET like_count = like_count + 1 WHERE id = $1',
-      [id]
-    );
-
-    res.status(200).json({ success: true, message: "Post liked!" });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Already liked or database error" });
-  }
+  } catch (err) { res.status(500).json({ error: "Post failed" }); }
 });
 
-// 💬 COMMENT ROUTE - Logic for your 'comments' table
-app.post('/posts/:id/comment', async (req, res) => {
-  const { id } = req.params; // post_id
-  const { userId, content } = req.body; // user_id and content from frontend
-
-  try {
-    // 1. Add record to the 'comments' table
-    await pool.query(
-      'INSERT INTO comments (post_id, user_id, content) VALUES ($1, $2, $3)',
-      [id, userId, content]
-    );
-
-    // 2. Update the comment_count in the 'posts' table
-    await pool.query(
-      'UPDATE posts SET comment_count = comment_count + 1 WHERE id = $1',
-      [id]
-    );
-
-    res.status(200).json({ success: true, message: "Comment added!" });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Failed to post comment" });
-  }
-});
-
-// 🗑️ DELETE POST ROUTE - Clean removal
+// 🗑️ DELETE POST
 app.delete('/posts/:id', async (req, res) => {
   const { id } = req.params;
-
   try {
-    // Delete the post. 
-    // NOTE: If you used 'ON DELETE CASCADE' in SQL, the likes/comments delete automatically.
     const result = await pool.query('DELETE FROM posts WHERE id = $1', [id]);
+    if (result.rowCount === 0) return res.status(404).json({ error: "Post not found" });
+    res.status(200).json({ message: "Post deleted" });
+  } catch (err) { res.status(500).json({ error: "Delete failed" }); }
+});
 
-    if (result.rowCount === 0) {
-      return res.status(404).json({ error: "Post not found" });
-    }
+// --- REACTIONS (LIKES & COMMENTS) ---
 
-    res.status(200).json({ message: "Post and associated data deleted" });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Delete failed" });
-  }
+app.post('/posts/:id/like', async (req, res) => {
+  const { id } = req.params;
+  const { userId } = req.body;
+  try {
+    await pool.query('INSERT INTO likes (post_id, user_id) VALUES ($1, $2)', [id, userId]);
+    res.status(200).json({ success: true });
+  } catch (err) { res.status(500).json({ error: "Error liking post" }); }
+});
+
+app.post('/posts/:id/comment', async (req, res) => {
+  const { id } = req.params;
+  const { userId, content } = req.body;
+  try {
+    const result = await pool.query(
+      'INSERT INTO comments (post_id, user_id, content, created_at) VALUES ($1, $2, $3, NOW()) RETURNING *',
+      [id, userId, content]
+    );
+    res.status(200).json(result.rows[0]);
+  } catch (err) { res.status(500).json({ error: "Comment failed" }); }
+});
+
+// 🔍 FETCH COMMENTS FOR A SPECIFIC POST
+app.get('/posts/:id/comments', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const result = await pool.query(`
+      SELECT c.*, u.username AS author_name 
+      FROM comments c 
+      JOIN users u ON c.user_id = u.id 
+      WHERE c.post_id = $1 
+      ORDER BY c.created_at ASC`, [id]);
+    res.json(result.rows);
+  } catch (err) { res.status(500).json({ error: "Fetch comments error" }); }
 });
 
 // 2. Stories

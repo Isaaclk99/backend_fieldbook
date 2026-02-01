@@ -146,23 +146,73 @@ app.post('/posts', async (req, res) => {
     res.status(500).json({ error: "Post failed: " + err.message });
   }
 });
-// --- DELETE POST ROUTE ---
-app.delete('/posts/:id', async (req, res) => {
-  const { id } = req.params;
+// 🟢 LIKE ROUTE - Logic for your 'likes' table
+app.post('/posts/:id/like', async (req, res) => {
+  const { id } = req.params; // post_id
+  const { userId } = req.body; // user_id from frontend
+
   try {
-    const result = await pool.query(
-      "DELETE FROM posts WHERE id = $1 RETURNING *",
+    // 1. Add record to the 'likes' table
+    await pool.query(
+      'INSERT INTO likes (post_id, user_id) VALUES ($1, $2)',
+      [id, userId]
+    );
+
+    // 2. Increment the like_count in the 'posts' table so the UI updates
+    await pool.query(
+      'UPDATE posts SET like_count = like_count + 1 WHERE id = $1',
       [id]
     );
 
-    if (result.rows.length === 0) {
+    res.status(200).json({ success: true, message: "Post liked!" });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Already liked or database error" });
+  }
+});
+
+// 💬 COMMENT ROUTE - Logic for your 'comments' table
+app.post('/posts/:id/comment', async (req, res) => {
+  const { id } = req.params; // post_id
+  const { userId, content } = req.body; // user_id and content from frontend
+
+  try {
+    // 1. Add record to the 'comments' table
+    await pool.query(
+      'INSERT INTO comments (post_id, user_id, content) VALUES ($1, $2, $3)',
+      [id, userId, content]
+    );
+
+    // 2. Update the comment_count in the 'posts' table
+    await pool.query(
+      'UPDATE posts SET comment_count = comment_count + 1 WHERE id = $1',
+      [id]
+    );
+
+    res.status(200).json({ success: true, message: "Comment added!" });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to post comment" });
+  }
+});
+
+// 🗑️ DELETE POST ROUTE - Clean removal
+app.delete('/posts/:id', async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    // Delete the post. 
+    // NOTE: If you used 'ON DELETE CASCADE' in SQL, the likes/comments delete automatically.
+    const result = await pool.query('DELETE FROM posts WHERE id = $1', [id]);
+
+    if (result.rowCount === 0) {
       return res.status(404).json({ error: "Post not found" });
     }
 
-    res.json({ message: "Post deleted successfully", deletedPost: result.rows[0] });
+    res.status(200).json({ message: "Post and associated data deleted" });
   } catch (err) {
-    console.error("Delete error:", err);
-    res.status(500).json({ error: "Failed to delete post" });
+    console.error(err);
+    res.status(500).json({ error: "Delete failed" });
   }
 });
 

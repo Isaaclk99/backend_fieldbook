@@ -219,16 +219,28 @@ app.post('/stories', async (req, res) => {
   }
 });
 
-// 3. Fundraising / Investment Opportunities
+// --- INVESTMENTS ---
+
+app.get('/investments', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT i.*, u.username AS owner_name, p.image_url 
+      FROM investments i
+      JOIN users u ON i.user_id = u.id
+      JOIN posts p ON i.post_id = p.id
+      ORDER BY i.created_at DESC
+    `);
+    res.json(result.rows);
+  } catch (err) { res.status(500).json({ error: "Fetch investments error" }); }
+});
+
 app.post('/investments', async (req, res) => {
   const { user_id, amount, project_name, roi, duration, account_number, account_name, description, image_url } = req.body;
   try {
-    // Note: We create a post entry AND an investment record
     const postResult = await pool.query(
       "INSERT INTO posts (author_id, description, image_url, is_investment, created_at) VALUES ($1, $2, $3, true, NOW()) RETURNING id",
       [user_id, description, image_url]
     );
-    
     const result = await pool.query(
       `INSERT INTO investments (post_id, user_id, amount, project_name, roi, duration, account_number, account_name, status, created_at) 
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'active', NOW()) RETURNING *`,
@@ -236,7 +248,7 @@ app.post('/investments', async (req, res) => {
     );
     res.status(201).json(result.rows[0]);
   } catch (err) {
-    res.status(500).json({ error: "Investment listing failed: " + err.message });
+    res.status(500).json({ error: "Investment listing failed" });
   }
 });
 
